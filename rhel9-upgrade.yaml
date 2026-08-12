@@ -3,6 +3,7 @@
   hosts: all
   become: true
   gather_facts: true
+  serial: 1
 
   tasks:
     - name: Confirm this is Red Hat Enterprise Linux 9
