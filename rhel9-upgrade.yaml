@@ -15,6 +15,15 @@
           This playbook supports only Red Hat Enterprise Linux 9.
           Detected: {{ ansible_distribution }} {{ ansible_distribution_version }}
 
+    - name: Remove old install-only packages while retaining three versions
+      ansible.builtin.command:
+        cmd: >-
+          dnf -y --setopt=installonly_limit=3 remove --oldinstallonly
+      register: kernel_cleanup
+      changed_when: >-
+        'Nothing to do.' not in kernel_cleanup.stdout and
+        'No packages marked for removal.' not in kernel_cleanup.stdout
+
     - name: Upgrade all RHEL packages from enabled repositories
       ansible.builtin.dnf:
         name: "*"
