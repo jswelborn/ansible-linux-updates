@@ -1,0 +1,41 @@
+---
+- name: Upgrade RHEL 9 to the latest available minor release
+  hosts: all
+  become: true
+  gather_facts: true
+  serial: 1
+
+  tasks:
+    - name: Confirm this is Red Hat Enterprise Linux 9
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == "RedHat"
+          - ansible_distribution_major_version == "9"
+        fail_msg: >-
+          This playbook supports only Red Hat Enterprise Linux 9.
+          Detected: {{ ansible_distribution }} {{ ansible_distribution_version }}
+
+    - name: Upgrade all RHEL packages from enabled repositories
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+        update_cache: true
+      register: rhel_upgrade
+
+    - name: Reboot when packages were updated
+      ansible.builtin.reboot:
+        reboot_timeout: 1800
+        connect_timeout: 30
+        post_reboot_delay: 30
+        test_command: whoami
+      when: rhel_upgrade.changed
+
+    - name: Show resulting RHEL version
+      ansible.builtin.command:
+        cmd: cat /etc/redhat-release
+      changed_when: false
+      register: rhel_version
+
+    - name: Report resulting RHEL version
+      ansible.builtin.debug:
+        msg: "{{ rhel_version.stdout }}"
