@@ -20,9 +20,10 @@
         cmd: >-
           dnf -y --setopt=installonly_limit=3 remove --oldinstallonly
       register: kernel_cleanup
-      changed_when: >-
-        'Nothing to do.' not in kernel_cleanup.stdout and
-        'No packages marked for removal.' not in kernel_cleanup.stdout
+      changed_when: kernel_cleanup.rc == 0
+      failed_when: >-
+        kernel_cleanup.rc != 0 and
+        'No old installonly packages found for removal.' not in kernel_cleanup.stderr
 
     - name: Upgrade all RHEL packages from enabled repositories
       ansible.builtin.dnf:
