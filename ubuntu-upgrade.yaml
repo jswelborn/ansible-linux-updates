@@ -20,6 +20,14 @@
     sources_backup_dir: /root/upgrade-backups-{{ ansible_date_time.iso8601_basic_short }}
 
   pre_tasks:
+    - name: Confirm in-place operating system upgrade
+      ansible.builtin.assert:
+        that:
+          - confirm_os_upgrade == "Yes"
+        fail_msg: >-
+          This playbook performs an in-place Ubuntu operating system upgrade.
+          The survey confirmation is required before continuing.
+
     - name: Validate supported Ubuntu LTS upgrade path
       ansible.builtin.assert:
         that:
