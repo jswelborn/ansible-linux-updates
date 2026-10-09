@@ -1,27 +1,41 @@
 ---
-- name: Upgrade Ubuntu 22.04 (Jammy) to 24.04 (Noble) (for now)
+- name: Upgrade Ubuntu LTS one release step
   hosts: all
   become: true
   gather_facts: true
 
   vars:
+    # Set this from an AAP survey.
+    # Valid choices: 22.04, 24.04, 26.04
+    target_ubuntu_version: "{{ target_ubuntu_version | default('24.04') }}"
+
+    supported_ubuntu_upgrade_paths:
+      "20.04": "22.04"
+      "22.04": "24.04"
+      "24.04": "26.04"
+
     apt_noninteractive_conf_path: /etc/apt/apt.conf.d/99noninteractive-upgrade
     release_upgrades_path: /etc/update-manager/release-upgrades
     sources_list_d: /etc/apt/sources.list.d
     sources_backup_dir: /root/upgrade-backups-{{ ansible_date_time.iso8601_basic_short }}
 
   pre_tasks:
-    - name: Ensure target is Ubuntu 22.04
+    - name: Validate supported Ubuntu LTS upgrade path
       ansible.builtin.assert:
         that:
           - ansible_distribution == "Ubuntu"
-          - ansible_distribution_version is version("22.04", "==")
-        fail_msg: "This playbook is only for Ubuntu 22.04."
+          - ansible_distribution_version in supported_ubuntu_upgrade_paths
+          - supported_ubuntu_upgrade_paths[ansible_distribution_version] == target_ubuntu_version
+        fail_msg: >-
+          Unsupported upgrade path. This playbook only supports one LTS step at a time:
+          Ubuntu 20.04 to 22.04, Ubuntu 22.04 to 24.04, or Ubuntu 24.04 to 26.04.
+          Current version: {{ ansible_distribution }} {{ ansible_distribution_version }}.
+          Requested target: {{ target_ubuntu_version }}.
 
     - name: Configure apt/dpkg to keep local config files and assume yes
       ansible.builtin.copy:
         dest: "{{ apt_noninteractive_conf_path }}"
-        mode: '0644'
+        mode: "0644"
         content: |
           Dpkg::Options {
             "--force-confdef";
@@ -36,69 +50,78 @@
         path: /etc/ucf.conf
         regexp: '^#?\s*UCFFORCECONFFNEW='
         line: 'UCFFORCECONFFNEW="no"'
-        create: yes
+        create: true
+        mode: "0644"
 
-    - name: Ensure ucf defaults are present
+    - name: Ensure ucf keeps old configs
       ansible.builtin.lineinfile:
         path: /etc/ucf.conf
         regexp: '^#?\s*UCFFORCECONFFOLD='
         line: 'UCFFORCECONFFOLD="yes"'
-        create: yes
+        create: true
+        mode: "0644"
 
     - name: Create backup directory for apt sources
       ansible.builtin.file:
         path: "{{ sources_backup_dir }}"
         state: directory
-        mode: '0700'
+        mode: "0700"
 
-    - name: Backup primary sources.list
+    - name: Backup primary sources.list if present
       ansible.builtin.copy:
         src: /etc/apt/sources.list
-        dest: "{{ sources_backup_dir }}/sources.list.jammy.bak"
+        dest: "{{ sources_backup_dir }}/sources.list.{{ ansible_distribution_release }}.bak"
         remote_src: true
-        mode: '0600'
+        mode: "0600"
+      failed_when: false
 
-    - name: Backup sources.list.d directory (if exists)
+    - name: Backup sources.list.d directory if present
       ansible.builtin.shell: |
         [ -d "{{ sources_list_d }}" ] && cp -a "{{ sources_list_d }}" "{{ sources_backup_dir }}/sources.list.d.bak" || true
-      args: { executable: /bin/bash }
+      args:
+        executable: /bin/bash
+      changed_when: false
 
-    - name: Disable third-party .list files under sources.list.d
+    - name: Disable third-party apt source files
       ansible.builtin.shell: |
         shopt -s nullglob
-        for f in {{ sources_list_d }}/*.list; do
-          if ! grep -Eq '(ubuntu\.com|archive\.ubuntu\.com|security\.ubuntu\.com)' "$f"; then
+
+        for f in {{ sources_list_d }}/*.list {{ sources_list_d }}/*.sources; do
+          if ! grep -Eqi '(ubuntu\.com|archive\.ubuntu\.com|security\.ubuntu\.com|ports\.ubuntu\.com)' "$f"; then
             mv -f "$f" "${f}.disabled"
           fi
         done
-      args: { executable: /bin/bash }
+      args:
+        executable: /bin/bash
 
     - name: Comment non-Ubuntu repos in /etc/apt/sources.list
       ansible.builtin.replace:
         path: /etc/apt/sources.list
-        regexp: '^(deb(?:-src)?\s+(?!.*(ubuntu\.com|archive\.ubuntu\.com|security\.ubuntu\.com)).*)$'
+        regexp: '^(deb(?:-src)?\s+(?!.*(ubuntu\.com|archive\.ubuntu\.com|security\.ubuntu\.com|ports\.ubuntu\.com)).*)$'
         replace: '# \1'
+      failed_when: false
 
     - name: Comment deb cdrom lines in /etc/apt/sources.list
       ansible.builtin.replace:
         path: /etc/apt/sources.list
         regexp: '^\s*deb\s+cdrom:.*$'
         replace: '# \g<0>'
+      failed_when: false
 
     - name: Update apt cache after disabling third-party repos
       ansible.builtin.apt:
-        update_cache: yes
+        update_cache: true
 
-    - name: Ensure needrestart is installed (for noninteractive service restarts)
+    - name: Ensure needrestart is installed
       ansible.builtin.apt:
         name: needrestart
         state: present
-        update_cache: yes
+        update_cache: true
 
-    - name: Force auto-restart of services during upgrades (conf.d drop-in)
+    - name: Force auto-restart of services during upgrades
       ansible.builtin.copy:
         dest: /etc/needrestart/conf.d/99-ansible-auto-restart.conf
-        mode: '0644'
+        mode: "0644"
         content: |
           $nrconf{restart} = 'a';
 
@@ -108,7 +131,7 @@
           - update-manager-core
           - ubuntu-release-upgrader-core
         state: present
-        update_cache: yes
+        update_cache: true
 
     - name: Set release upgrader to LTS channel
       ansible.builtin.lineinfile:
@@ -116,58 +139,64 @@
         regexp: '^Prompt='
         line: 'Prompt=lts'
 
-    - name: Full dist-upgrade on 22.04 first
+    - name: Fully patch current Ubuntu release before upgrade
       ansible.builtin.apt:
-        update_cache: yes
+        update_cache: true
         upgrade: dist
 
   tasks:
-    - name: Run noninteractive release upgrade to 24.04 (keep local configs)
+    - name: Run noninteractive Ubuntu LTS release upgrade
       ansible.builtin.shell: |
         export DEBIAN_FRONTEND=noninteractive
         export UCF_FORCE_CONFFOLD=1
         export NEEDRESTART_MODE=a
         do-release-upgrade -f DistUpgradeViewNonInteractive -m server -q
+      args:
+        executable: /bin/bash
       async: 14400
       poll: 15
 
-    - name: Reboot after upgrade
+    - name: Reboot after Ubuntu LTS upgrade
       ansible.builtin.reboot:
         reboot_timeout: 1800
-        msg: "Rebooting after 22.04→24.04 upgrade"
+        msg: "Rebooting after Ubuntu upgrade to {{ target_ubuntu_version }}"
 
   post_tasks:
-    - name: Gather facts (now on Noble)
+    - name: Gather facts after upgrade
       ansible.builtin.setup:
 
-    - name: Verify 24.04
+    - name: Verify target Ubuntu version
       ansible.builtin.assert:
         that:
           - ansible_distribution == "Ubuntu"
-          - ansible_distribution_version is version("24.04", "==")
-        fail_msg: "Host did not upgrade to 24.04."
+          - ansible_distribution_version is version(target_ubuntu_version, "==")
+        fail_msg: >-
+          Host did not upgrade to Ubuntu {{ target_ubuntu_version }}.
+          Current version is {{ ansible_distribution }} {{ ansible_distribution_version }}.
 
-    - name: Refresh packages on Noble (final patch)
+    - name: Refresh packages on upgraded Ubuntu release
       ansible.builtin.apt:
-        update_cache: yes
+        update_cache: true
         upgrade: dist
 
     - name: Purge orphaned packages
       ansible.builtin.apt:
-        autoremove: yes
-        purge: yes
+        autoremove: true
+        purge: true
 
     - name: Clean apt caches
       ansible.builtin.apt:
-        autoclean: yes
+        autoclean: true
 
-    - name: Refresh MOTD/news (optional)
+    - name: Refresh MOTD/news
       ansible.builtin.shell: run-parts /etc/update-motd.d
-      args: { executable: /bin/bash }
+      args:
+        executable: /bin/bash
       changed_when: false
+      failed_when: false
 
     - name: Announce completion
       ansible.builtin.debug:
         msg:
           - "Upgrade complete on {{ inventory_hostname }}."
-          - "Now running: {{ ansible_distribution }} {{ ansible_distribution_version }} (kernel {{ ansible_kernel }})"
+          - "Now running: {{ ansible_distribution }} {{ ansible_distribution_version }} kernel {{ ansible_kernel }}."
