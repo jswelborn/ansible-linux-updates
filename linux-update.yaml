@@ -1,0 +1,66 @@
+---
+- name: Update Linux packages
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Update Debian-based systems
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: dist
+      when: ansible_os_family == "Debian"
+
+    - name: Check if Debian-based system requires reboot
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: linux_reboot_required_debian
+      when: ansible_os_family == "Debian"
+
+    - name: Update Red Hat-based systems
+      ansible.builtin.yum:
+        name: "*"
+        state: latest
+      when: ansible_os_family == "RedHat"
+
+    - name: Check if needs-restarting is available
+      ansible.builtin.command:
+        cmd: which needs-restarting
+      register: needs_restarting_command
+      changed_when: false
+      failed_when: false
+      when: ansible_os_family == "RedHat"
+
+    - name: Check if Red Hat-based system requires reboot
+      ansible.builtin.command:
+        cmd: needs-restarting -r
+      register: linux_reboot_required_rhel
+      changed_when: false
+      failed_when: false
+      when:
+        - ansible_os_family == "RedHat"
+        - needs_restarting_command.rc == 0
+
+    - name: Set reboot requirement
+      ansible.builtin.set_fact:
+        linux_reboot_required: >-
+          {{
+            (
+              ansible_os_family == "Debian"
+              and linux_reboot_required_debian.stat.exists | default(false)
+            )
+            or
+            (
+              ansible_os_family == "RedHat"
+              and linux_reboot_required_rhel.rc | default(0) == 1
+            )
+          }}
+
+    - name: Reboot Linux host when required
+      ansible.builtin.reboot:
+        msg: "Rebooting Linux host after package updates."
+        reboot_timeout: 1800
+        connect_timeout: 30
+        pre_reboot_delay: 5
+        post_reboot_delay: 15
+      when: linux_reboot_required | bool
