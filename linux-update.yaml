@@ -3,6 +3,7 @@
   hosts: all
   become: true
   gather_facts: true
+  serial: 1
 
   tasks:
     - name: Update Debian-based systems
