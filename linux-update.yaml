@@ -18,6 +18,20 @@
       register: linux_reboot_required_debian
       when: ansible_os_family == "Debian"
 
+    - name: Remove old install-only packages while retaining two versions
+      ansible.builtin.command:
+        cmd: dnf -y --setopt=installonly_limit=2 remove --oldinstallonly
+      register: kernel_cleanup
+      changed_when: >-
+        kernel_cleanup.rc == 0 and
+        'No old installonly packages found for removal.'
+        not in (kernel_cleanup.stdout ~ kernel_cleanup.stderr)
+      failed_when: >-
+        kernel_cleanup.rc != 0 and
+        'No old installonly packages found for removal.'
+        not in (kernel_cleanup.stdout ~ kernel_cleanup.stderr)
+      when: ansible_os_family == "RedHat"
+
     - name: Update Red Hat-based systems
       ansible.builtin.yum:
         name: "*"
